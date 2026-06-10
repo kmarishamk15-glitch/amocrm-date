@@ -4,18 +4,40 @@ const axios = require("axios");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-app.use(express.json());
-
 const CODE_VERSION = "1.0.0";
 
 // IDs
-const PIPELINE_SERVICES = 5240944;
 const PIPELINE_TECHNIQUE = 5276629;
-
-const STAGE_NEW_LEAD = 47069740;
 const STAGE_CLOSED_NOT_REALIZED = 143;
-
 const CUSTOM_FIELD_DATE_ID = 573623;
+
+/**
+ * 🔥 ВАЖНО:
+ * amoCRM может присылать JSON / form-urlencoded / сырой body
+ * поэтому используем ВСЕ способы парсинга
+ */
+
+// JSON parser
+app.use(express.json({ limit: "2mb" }));
+
+// form-urlencoded parser
+app.use(express.urlencoded({ extended: true }));
+
+// RAW logger (самое важное для дебага)
+app.use((req, res, next) => {
+  let data = "";
+
+  req.on("data", chunk => {
+    data += chunk.toString();
+  });
+
+  req.on("end", () => {
+    req.rawBody = data;
+
+    console.log("🔥 RAW BODY:", data || "(empty)");
+    next();
+  });
+});
 
 // healthcheck
 app.get("/", (req, res) => {
@@ -23,17 +45,27 @@ app.get("/", (req, res) => {
   res.send("OK v" + CODE_VERSION);
 });
 
+// webhook
 app.post("/webhook", async (req, res) => {
   try {
     console.log("🔥 WEBHOOK HIT");
-    console.log("BODY:", JSON.stringify(req.body, null, 2));
 
-    const lead =
+    console.log("📦 req.body:", req.body);
+    console.log("📦 rawBody:", req.rawBody);
+
+    // amoCRM может прислать разные структуры
+    let lead =
       req.body?.leads?.update?.[0] ||
-      req.body?.leads?.add?.[0];
+      req.body?.leads?.add?.[0] ||
+      req.body?.leads?.status?.[0];
+
+    // fallback: если пришло как строка в rawBody (редко, но бывает)
+    if (!lead && req.rawBody?.includes("id=")) {
+      console.log("⚠️ Detected non-JSON payload, skipping parse fallback");
+    }
 
     if (!lead?.id) {
-      console.log("No lead id, exit");
+      console.log("❌ No lead id, exit");
       return res.sendStatus(200);
     }
 
@@ -41,40 +73,35 @@ app.post("/webhook", async (req, res) => {
     const pipelineId = lead.pipeline_id;
     const stageId = lead.status_id;
 
-    console.log("Lead:", { leadId, pipelineId, stageId });
+    console.log("👉 Lead:", { leadId, pipelineId, stageId });
 
-    // только воронка Техника
+    // фильтр: только Техника
     if (pipelineId !== PIPELINE_TECHNIQUE) {
-      console.log("Not technique pipeline, skip");
+      console.log("⛔ Skip: not technique pipeline");
       return res.sendStatus(200);
     }
 
-    // если стадия 143 — ничего не делаем
+    // если закрыто и не реализовано — не трогаем дату
     if (stageId === STAGE_CLOSED_NOT_REALIZED) {
-      console.log(`Lead ${leadId}: stage 143 → skip date update`);
+      console.log("⛔ Skip: stage 143 (no update)");
       return res.sendStatus(200);
     }
 
     const subdomain = process.env.AMO_SUBDOMAIN;
     const token = process.env.AMO_ACCESS_TOKEN;
 
-    console.log("ENV:", {
-      subdomain,
-      tokenExists: !!token
-    });
-
     if (!subdomain || !token) {
-      console.log("ERROR: missing credentials");
+      console.log("❌ Missing credentials");
       return res.sendStatus(200);
     }
 
     const url = `https://${subdomain}.amocrm.ru/api/v4/leads/${leadId}`;
 
-    // ⚡ лучше ISO формат (amoCRM стабильнее его принимает)
-    const today = new Date().toISOString();
+    // amoCRM надёжнее принимает timestamp
+    const today = Math.floor(Date.now() / 1000);
 
-    console.log("PATCH URL:", url);
-    console.log("NEW DATE:", today);
+    console.log("📤 PATCH:", url);
+    console.log("📅 NEW DATE:", today);
 
     const response = await axios.patch(
       url,
@@ -98,14 +125,12 @@ app.post("/webhook", async (req, res) => {
       }
     );
 
-    console.log("amoCRM response:", response.status);
-
-    console.log(`Lead ${leadId}: date updated`);
+    console.log("✅ amoCRM response:", response.status);
 
     return res.sendStatus(200);
 
   } catch (e) {
-    console.log("ERROR:", e.response?.data || e.message);
+    console.log("❌ ERROR:", e.response?.data || e.message);
     return res.sendStatus(200);
   }
 });
