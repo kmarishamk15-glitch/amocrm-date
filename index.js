@@ -89,9 +89,14 @@ app.post("/webhook", async (req, res) => {
 
     const subdomain = process.env.AMO_SUBDOMAIN;
     const token = process.env.AMO_ACCESS_TOKEN;
-
+    
+    // 🔍 ОТЛАДКА: пишем, что видит скрипт
+    console.log("🔍 ENV DEBUG:");
+    console.log("  • AMO_SUBDOMAIN:", subdomain ? `"${subdomain}"` : "undefined/empty");
+    console.log("  • AMO_ACCESS_TOKEN:", token ? "set (length: " + token.length + ")" : "undefined/empty");
+    
     if (!subdomain || !token) {
-      console.log("❌ Missing credentials");
+      console.log("❌ Missing credentials — проверьте переменные в Render!");
       return res.sendStatus(200);
     }
 
